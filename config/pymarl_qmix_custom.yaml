@@ -1,0 +1,17 @@
+# config/qmix_custom.yaml
+algorithm: qmix
+env: custom_6g_env
+env_args:
+  num_users: 60
+  macro_positions: [[50, 50]]
+  small_positions: [[20, 20], [20, 80], [80, 20], [80, 80]]
+  cell_capacity: 15
+  episode_limit: 50
+use_cuda: False
+lr: 0.0005
+batch_size: 32
+epsilon_start: 1.0
+epsilon_end: 0.05
+epsilon_decay: 50000
+mixer: qmix
+runner: parallel
