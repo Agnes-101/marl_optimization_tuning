@@ -1,5 +1,5 @@
 # envs/custom_gym_envs.py
-from custom_channel_env import PyMARLCustomEnv
+from .custom_channel_env import PyMARLCustomEnv
 
 def env_fn(env_args):
     return PyMARLCustomEnv(env_args)

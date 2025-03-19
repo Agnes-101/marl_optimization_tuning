@@ -1,0 +1,9 @@
+Metadata-Version: 2.2
+Name: marl_optimisation_ctde
+Version: 0.1.0
+Requires-Dist: tensorflow
+Requires-Dist: gym
+Requires-Dist: numpy
+Requires-Dist: optuna
+Requires-Dist: pyyaml
+Dynamic: requires-dist

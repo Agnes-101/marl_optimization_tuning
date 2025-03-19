@@ -1,12 +1,16 @@
-# File: envs/custom_env.py
+# File: envs/custom_channel_env.py
+
 import numpy as np
 import gym
 from gym import spaces
 
-# -------------------------
+# ---------------------------------------------------
 # MobilityModel
-# -------------------------
+# ---------------------------------------------------
 class MobilityModel:
+    """
+    Modified Random Waypoint (MRWP) model to update user positions.
+    """
     def __init__(self, area_size=100, mu_V=1.0, sigma_V=0.5, V_min=0.1, V_max=3.0, pause_prob=0.1):
         self.area_size = area_size
         self.mu_V = mu_V
@@ -27,10 +31,14 @@ class MobilityModel:
         new_positions[pause_mask, 1] = np.clip(positions[pause_mask, 1] + dy[pause_mask], 0, self.area_size)
         return new_positions
 
-# -------------------------
+# ---------------------------------------------------
 # ChannelModel
-# -------------------------
+# ---------------------------------------------------
 class ChannelModel:
+    """
+    Computes the channel gain using Friis free-space loss (with log-normal shadowing),
+    directional beamforming gain, blockage probability, and Rayleigh fading.
+    """
     def __init__(self, PL0=0, sigma_shadow=2.0,
                  beam_gain_main=10, beam_gain_side=1, beamwidth=np.deg2rad(30),
                  blockage_prob=0.3, NLOS_loss_dB=10, frequency=28e9):
@@ -45,7 +53,7 @@ class ChannelModel:
 
     def get_path_loss(self, d):
         shadowing = np.random.normal(0, self.sigma_shadow)
-        c = 3e8
+        c = 3e8  # speed of light
         friis_loss = 20 * np.log10(4 * np.pi * d * self.frequency / c)
         PL_dB = self.PL0 + friis_loss + shadowing
         return 10 ** (-PL_dB / 10)
@@ -63,10 +71,14 @@ class ChannelModel:
         fading = max(0.5, np.random.rayleigh(scale=1.0))
         return pl * bf_gain * blockage * fading
 
-# -------------------------
+# ---------------------------------------------------
 # Cell Class
-# -------------------------
+# ---------------------------------------------------
 class Cell:
+    """
+    Represents a base station. Macro and small cells are defined with different
+    transmit powers and path loss exponents.
+    """
     def __init__(self, cell_type, position):
         self.cell_type = cell_type
         self.position = np.array(position)
@@ -77,13 +89,15 @@ class Cell:
             self.transmit_power_dbm = 40
             self.path_loss_exponent = 2.5
 
-# -------------------------
+# ---------------------------------------------------
 # Best Base Station Selection Function
-# -------------------------
+# ---------------------------------------------------
 def select_best_bs(user_idx, env, bs_loads, base_penalty=20.0):
-    # Compute SINR values for each base station.
+    """
+    Selects the best base station for a given user based on a combination of SINR,
+    distance, and load penalties.
+    """
     sinr_list = [env.calculate_sinr(user_idx, bs_idx) for bs_idx in range(env.num_cells)]
-    # Compute distances from the user to each BS.
     distances = [np.linalg.norm(env.user_positions[user_idx] - env.cells[bs_idx].position)
                  for bs_idx in range(env.num_cells)]
     max_distance = max(distances) if max(distances) > 0 else 1
@@ -96,7 +110,7 @@ def select_best_bs(user_idx, env, bs_loads, base_penalty=20.0):
 
     selection_score = []
     for i in range(env.num_cells):
-        if distances[i] > 50:  # Limit maximum association distance.
+        if distances[i] > 50:
             score = -np.inf
         else:
             score = (0.7 * norm_sinr[i]) - (0.2 * load_penalty[i]) - (0.1 * distance_penalty[i]) - sinr_spread_penalty
@@ -114,10 +128,14 @@ def select_best_bs(user_idx, env, bs_loads, base_penalty=20.0):
             return current_bs
     return best_bs_candidate
 
-# -------------------------
+# ---------------------------------------------------
 # HeterogeneousEnvironment
-# -------------------------
+# ---------------------------------------------------
 class HeterogeneousEnvironment:
+    """
+    The underlying simulation environment for a multi-tier cellular network.
+    It handles user positions, channel effects, and base station assignments.
+    """
     def __init__(self, macro_positions, small_positions, num_users, cell_capacity):
         self.cells = [Cell('macro', pos) for pos in macro_positions] + \
                      [Cell('small', pos) for pos in small_positions]
@@ -156,7 +174,7 @@ class HeterogeneousEnvironment:
         significant_movement = movement_magnitude > 3
         for i, moved in enumerate(significant_movement):
             if moved:
-                self.user_cell_assignment[i] = -1  # Reset BS assignment if significant movement.
+                self.user_cell_assignment[i] = -1
         self.user_positions = new_positions
 
     def fairness_index(self, bs_loads):
@@ -165,7 +183,6 @@ class HeterogeneousEnvironment:
         return (total ** 2) / (self.num_cells * squared_sum) if squared_sum > 0 else 1.0
 
     def apply_actions(self, actions):
-        # Update BS assignments using the provided solution.
         for user_idx, new_bs in enumerate(actions):
             self.user_cell_assignment[user_idx] = new_bs
 
@@ -192,11 +209,9 @@ class HeterogeneousEnvironment:
         return signal_power / (inter_bs_interference + intra_bs_interference + self.noise_power)
 
     def step(self, actions=None):
-        # Update positions first.
         self.update_user_positions()
         bs_loads = np.zeros(self.num_cells)
         if actions is None:
-            # Instead of random assignment, use our best BS selection function.
             actions = []
             for user_idx in range(self.num_users):
                 best_bs = select_best_bs(user_idx, self, bs_loads, base_penalty=20.0)
@@ -217,15 +232,15 @@ class HeterogeneousEnvironment:
         }
         return sinr_list, state
 
-# -------------------------
+# ---------------------------------------------------
 # Evaluation Function (Detailed)
-# -------------------------
-def evaluate_solution(env, solution, alpha=0.1, beta=0.1):
+# ---------------------------------------------------
+def evaluate_detailed_solution(env, solution, alpha=0.1, beta=0.1):
     """
-    Evaluate a candidate solution by applying BS assignments and computing multiple metrics:
-      - Fitness: Sum of per-user rewards.
-      - Each user's reward is defined as:
-            log(1+SINR) - alpha*(distance/d_max) - beta*(load imbalance penalty)
+    Evaluate a candidate solution by applying base station assignments
+    and computing multiple metrics:
+      - Fitness: Sum of per-user rewards, where each reward is:
+          log(1 + SINR) - alpha*(distance/d_max) - beta*(load imbalance penalty)
     """
     env.apply_actions(solution)
     bs_loads = np.zeros(env.num_cells)
@@ -268,3 +283,107 @@ def evaluate_solution(env, solution, alpha=0.1, beta=0.1):
         "sinr_list": sinr_list,
         "bs_loads": bs_loads
     }
+
+# def evaluate_detailed_solution(env, solution, alpha=0.1, beta=0.1):
+#     # Use env.env instead of env directly
+#     env.env.apply_actions(solution)
+#     bs_loads = np.zeros(env.env.num_cells)
+#     for bs in solution:
+#         bs_loads[bs] += 1
+#     d_max = np.linalg.norm([env.env.mobility_model.area_size, env.env.mobility_model.area_size])
+    
+#     rewards = []
+#     sinr_list = []
+#     throughput_list = []
+#     distances = []
+    
+#     for user_idx in range(env.env.num_users):
+#         sinr = env.env.calculate_sinr(user_idx, solution[user_idx])
+#         sinr_list.append(sinr)
+#         throughput = np.log2(1 + sinr)
+#         throughput_list.append(throughput)
+#         bs_position = env.env.cells[solution[user_idx]].position
+#         user_position = env.env.user_positions[user_idx]
+#         distance = np.linalg.norm(user_position - bs_position)
+#         distances.append(distance)
+#         distance_penalty = distance / d_max
+#         load_penalty = abs(bs_loads[solution[user_idx]] - np.mean(bs_loads)) / (np.mean(bs_loads) + 1e-6)
+#         user_reward = np.log(1 + sinr) - alpha * distance_penalty - beta * load_penalty
+#         rewards.append(user_reward)
+    
+#     fitness_value = np.sum(rewards)
+#     average_sinr = np.mean(sinr_list)
+#     average_throughput = np.mean(throughput_list)
+#     fairness = env.env.fairness_index(bs_loads)
+#     load_variance = np.var(bs_loads)
+    
+#     return {
+#         "fitness": fitness_value,
+#         "average_sinr": average_sinr,
+#         "average_throughput": average_throughput,
+#         "fairness": fairness,
+#         "load_variance": load_variance,
+#         "rewards": rewards,
+#         "sinr_list": sinr_list,
+#         "bs_loads": bs_loads
+#     }
+
+
+# ---------------------------------------------------
+# PyMARLCustomEnv (Gym-Compatible Wrapper)
+# ---------------------------------------------------
+class PyMARLCustomEnv(gym.Env):
+    def __init__(self, env_args):
+        super(PyMARLCustomEnv, self).__init__()
+        self.num_users = env_args.get("num_users", 60)
+        self.macro_positions = env_args.get("macro_positions", [[50, 50]])
+        self.small_positions = env_args.get("small_positions", [[20, 20], [20, 80], [80, 20], [80, 80]])
+        self.cell_capacity = env_args.get("cell_capacity", 15)
+        self.episode_limit = env_args.get("episode_limit", 50)
+        self.env = HeterogeneousEnvironment(
+            self.macro_positions,
+            self.small_positions,
+            self.num_users,
+            self.cell_capacity
+        )
+        self.num_cells = self.env.num_cells
+        self.obs_dim = 2 + 1 + self.num_cells
+        self.observation_space = spaces.Box(low=0, high=100, shape=(self.obs_dim,), dtype=np.float32)
+        self.action_space = spaces.Discrete(self.num_cells)
+        self.current_step = 0
+        
+    def __getattr__(self, attr):
+        return getattr(self.env, attr)
+    
+    def reset(self):
+        state = self.env.reset()
+        obs = []
+        for i in range(self.num_users):
+            obs_i = np.concatenate([
+                state["user_positions"][i],
+                [state["fairness"]],
+                state["cell_load"]
+            ])
+            obs.append(obs_i)
+        global_state = np.concatenate(obs)
+        self.current_step = 0
+        return {"obs": obs, "state": global_state}
+
+    def step(self, actions):
+        sinr_list, state = self.env.step(actions)
+        obs = []
+        rewards = []
+        for i in range(self.num_users):
+            obs_i = np.concatenate([
+                state["user_positions"][i],
+                [state["fairness"]],
+                state["cell_load"]
+            ])
+            obs.append(obs_i)
+            rewards.append(np.log(1 + sinr_list[i]))
+        global_state = np.concatenate(obs)
+        self.current_step += 1
+        done = self.current_step >= self.episode_limit
+        return {"obs": obs, "state": global_state, "reward": rewards, "done": done, "info": {}}
+
+    

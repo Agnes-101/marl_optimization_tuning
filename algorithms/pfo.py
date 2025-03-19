@@ -1,7 +1,7 @@
 # algorithms/pfo.py
 import numpy as np
 import random
-from envs.custom_channel_env import evaluate_solution
+from envs.custom_channel_env import evaluate_detailed_solution
 
 class PolarFoxOptimization:
     def __init__(self, num_users, num_cells, env, population_size=30, iterations=50, jump_rate=0.2, follow_rate=0.3):
@@ -15,7 +15,7 @@ class PolarFoxOptimization:
         self.population = [np.random.randint(0, num_cells, size=num_users) for _ in range(population_size)]
     
     def fitness(self, solution):
-        return evaluate_solution(self.env, solution)["fitness"]
+        return evaluate_detailed_solution(self.env, solution)["fitness"]
     
     def jump_experience(self, fox):
         new_fox = fox.copy()
