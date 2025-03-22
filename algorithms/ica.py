@@ -1,19 +1,21 @@
-# algorithms/ica.py
 import numpy as np
-from envs.custom_channel_env import evaluate_solution
+from envs.custom_channel_env import evaluate_detailed_solution
 
 class ICAOptimization:
-    def __init__(self, num_users, num_cells, env, population_size=30, imperialist_count=5, iterations=50):
+    def __init__(self, num_users, num_cells, env, population_size=30, imperialist_count=5, iterations=50, seed=None):
         self.num_users = num_users
         self.num_cells = num_cells
         self.env = env
         self.population_size = population_size
         self.imperialist_count = imperialist_count
         self.iterations = iterations
-        self.population = [np.random.randint(0, num_cells, size=num_users) for _ in range(population_size)]
+        self.seed = seed
+        self.rng = np.random.RandomState(seed)
+        # Initialize population using the seeded RNG
+        self.population = [self.rng.randint(0, num_cells, size=num_users) for _ in range(population_size)]
     
     def fitness(self, solution):
-        return evaluate_solution(self.env, solution)["fitness"]
+        return evaluate_detailed_solution(self.env, solution)["fitness"]
     
     def optimize(self):
         sorted_population = sorted(self.population, key=self.fitness, reverse=True)
@@ -23,7 +25,8 @@ class ICAOptimization:
             for i in range(len(colonies)):
                 imp = imperialists[i % self.imperialist_count]
                 colony = colonies[i].copy()
-                idx = np.random.randint(0, self.num_users)
+                # Use the seeded RNG for selecting a random index
+                idx = self.rng.randint(0, self.num_users)
                 colony[idx] = imp[idx]
                 if self.fitness(colony) > self.fitness(colonies[i]):
                     colonies[i] = colony

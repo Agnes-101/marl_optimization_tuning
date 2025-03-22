@@ -1,69 +1,117 @@
-# File: optuna_tuning/objective_pfo.py
+# # File: optuna_tuning/objective_pfo.py
 import sys
 import os
+import optuna
+import numpy as np
+import time
 
-# Add project root to sys.path so that 'envs' can be found
+#
+# Add project root to sys.path
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-
-import optuna
 from envs.custom_channel_env import PyMARLCustomEnv, evaluate_detailed_solution
 from algorithms.pfo import PolarFoxOptimization
-import numpy as np
 
-def train_pfo(lr, pfo_jump_rate, alpha, beta, num_episodes=10):
-    """
-    Sets up the environment and runs the PFO optimization algorithm.
+def train_pfo(trial, fixed_env_args):
+    # Hyperparameters to tune
+    seed = 42  # Fixed seed for reproducibility
+    np.random.seed(seed)
+    # torch.manual_seed(seed)  # If using PyTorch
+    # random.seed(seed)
+
+    params = {
+        'population_size': trial.suggest_int('population_size', 30, 100),
+        'iterations': trial.suggest_int('iterations', 50, 300),
+        'mutation_factor': trial.suggest_float('mutation_factor', 0.1, 0.5),
+        'initial_jump_power': trial.suggest_float('initial_jump_power', 0.5, 2.0),
+        'alpha': trial.suggest_float('alpha', 0.01, 0.1),# before 0.05-0.3
+        'beta': trial.suggest_float('beta', 0.01, 0.1),
+        'group1_weight': trial.suggest_float('group1_weight', 0.3, 0.6),  # Explorer group before(0.1-0.4)
+        'group2_weight': trial.suggest_float('group2_weight', 0.25, 0.4),
+        'group3_weight': trial.suggest_float('group3_weight', 0.25, 0.4),  
+        'group4_weight': trial.suggest_float('group4_weight', 0.1, 0.4),# Conservative group
+    }
+
+    # Environment setup (fixed for consistency)
+    env = PyMARLCustomEnv(fixed_env_args)
+    env.seed(42)  
+    env.reset()
     
-    Parameters:
-      lr: Learning rate (even if not used by PFO directly, can be tuned for consistency).
-      pfo_jump_rate: The jump rate used by the PFO algorithm.
-      alpha: Weight for the normalized distance penalty.
-      beta: Weight for the load imbalance penalty.
-      num_episodes: Number of episodes (or iterations) for a short training run.
-      
-    Returns:
-      final_reward: The overall fitness (reward) computed by the detailed evaluation.
-    """
+    # Initialize PFO with tuned parameters
+    pfo = PolarFoxOptimization(
+        num_users=env.num_users,
+        num_cells=env.action_space.n,
+        env=env,
+        population_size=params['population_size'],
+        iterations=params['iterations'],
+        mutation_factor=params['mutation_factor'],
+        seed=42  # Fixed for reproducibility
+    )
+    
+    # Override group weights dynamically
+    pfo.group_weights = [
+        params['group1_weight'],      # Group 1 (Explorer)
+        # 0.25,
+        # 0.25,
+        params['group2_weight'],# 0.25,                         # Group 2 (Balanced)
+        params['group4_weight'], # 0.25,                         # Group 3 (Follower)
+        params['group4_weight']       # Group 4 (Conservative)
+    ]
+    
+    # Optimization
+    start_time = time.time()
+    best_solution = pfo.optimize()
+    exec_time = time.time() - start_time
+    
+    # Run optimization
+    best_solution = pfo.optimize()
+    metrics = evaluate_detailed_solution(env.env, best_solution, 
+                                       alpha=params['alpha'], 
+                                       beta=params['beta'])
+    
+    # Logging
+    trial.set_user_attr("execution_time", exec_time)
+    for k, v in metrics.items():
+        trial.set_user_attr(k, v)
+
+    return metrics["fitness"]
+
+def objective(trial):
+    # Fixed environment configuration
     env_args = {
         "num_users": 60,
         "episode_limit": 50,
         "macro_positions": [[50, 50]],
         "small_positions": [[20, 20], [20, 80], [80, 20], [80, 80]],
-        "cell_capacity": 15
+        "cell_capacity": 15,
+        "seed": 42
     }
-    # Create the Gym-compatible environment.
-    env = PyMARLCustomEnv(env_args)
-    num_users = env.num_users
-    num_cells = env.action_space.n
-
-    # Instantiate the PFO algorithm with given jump rate (other parameters can be fixed or tuned separately).
-    pfo = PolarFoxOptimization(num_users, num_cells, env, population_size=30, iterations=10, jump_rate=pfo_jump_rate, follow_rate=0.3)
-    best_solution = pfo.optimize()
-
-    # Use the detailed evaluation function that now accepts alpha and beta.
-    metrics = evaluate_detailed_solution(env.env, best_solution, alpha=alpha, beta=beta)
-    final_reward = metrics["fitness"]
-    return final_reward
-
-def objective(trial):
-    """
-    Optuna objective function for tuning PFO hyperparameters along with alpha and beta.
-    """
-    # Suggest hyperparameters for PFO and the penalty weights.
-    lr = trial.suggest_loguniform('lr_pfo', 1e-5, 1e-2)
-    pfo_jump_rate = trial.suggest_float('pfo_jump_rate', 0.1, 0.5)
-    alpha = trial.suggest_float('alpha', 0.05, 0.2)
-    beta = trial.suggest_float('beta', 0.05, 0.2)
     
-    final_reward = train_pfo(lr, pfo_jump_rate, alpha, beta, num_episodes=10)
-    print(f"Trial {trial.number}: lr={lr:.5f}, pfo_jump_rate={pfo_jump_rate:.3f}, alpha={alpha:.3f}, beta={beta:.3f} -> Reward: {final_reward:.3f}")
-    return final_reward
+    return train_pfo(trial, env_args)
 
 if __name__ == '__main__':
-    study = optuna.create_study(direction='maximize')
-    study.optimize(objective, n_trials=20)
-    print("Best parameters:", study.best_params)
-    print("Best reward:", study.best_value)
+    study = optuna.create_study(
+        direction='maximize',
+        storage="sqlite:///optuna.db",
+        sampler=optuna.samplers.TPESampler(n_startup_trials=20, seed=42),
+        pruner=optuna.pruners.MedianPruner(n_warmup_steps=10),
+        load_if_exists=True
+    )
+    study.optimize(objective, n_trials=100, n_jobs=-1)
+    
+    print("\n=== Best Parameters ===")
+    for key, value in study.best_params.items():
+        print(f"{key}: {value:.4f}")
+    
+    best_trial = study.best_trial
+    print("\n=== Best Metrics ===")
+    print(f"Fitness: {best_trial.value:.4f}")
+    print(f"SINR: {best_trial.user_attrs['average_sinr']:.2f} dB")
+    print(f"Throughput: {best_trial.user_attrs['average_throughput']:.2f} Mbps")
+    print(f"Time: {best_trial.user_attrs['execution_time']:.1f}s")
+    
+
+
+

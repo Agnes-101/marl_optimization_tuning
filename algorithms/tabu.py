@@ -1,20 +1,21 @@
-# algorithms/tabu.py
 import numpy as np
-import random
-from envs.custom_channel_env import evaluate_solution
+from envs.custom_channel_env import evaluate_detailed_solution
 
 class TabuSearchOptimization:
-    def __init__(self, num_users, num_cells, env, iterations=50, tabu_size=10):
+    def __init__(self, num_users, num_cells, env, iterations=50, tabu_size=10, seed=None):
         self.num_users = num_users
         self.num_cells = num_cells
         self.env = env
         self.iterations = iterations
         self.tabu_size = tabu_size
-        self.current_solution = np.random.randint(0, num_cells, size=num_users)
+        self.seed = seed
+        self.rng = np.random.RandomState(seed)
+        # Initialize current solution using the seeded RNG
+        self.current_solution = self.rng.randint(0, num_cells, size=num_users)
         self.tabu_list = []
     
     def fitness(self, solution):
-        return evaluate_solution(self.env, solution)["fitness"]
+        return evaluate_detailed_solution(self.env, solution)["fitness"]
     
     def optimize(self):
         best_solution = self.current_solution.copy()

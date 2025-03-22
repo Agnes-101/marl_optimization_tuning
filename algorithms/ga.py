@@ -1,35 +1,39 @@
-# algorithms/ga.py
 import numpy as np
-import random
-from envs.custom_channel_env import evaluate_solution
+from envs.custom_channel_env import evaluate_detailed_solution
 
 class GAOptimization:
-    def __init__(self, num_users, num_cells, env, population_size=30, generations=50, mutation_rate=0.1):
+    def __init__(self, num_users, num_cells, env, population_size=30, generations=50, mutation_rate=0.1, seed=None):
         self.num_users = num_users
         self.num_cells = num_cells
         self.env = env
         self.population_size = population_size
         self.generations = generations
         self.mutation_rate = mutation_rate
-        self.population = [np.random.randint(0, num_cells, size=num_users) for _ in range(population_size)]
+        self.seed = seed
+        self.rng = np.random.RandomState(seed)
+        # Initialize population using the seeded RNG
+        self.population = [self.rng.randint(0, num_cells, size=num_users) for _ in range(population_size)]
     
     def fitness(self, solution):
-        return evaluate_solution(self.env, solution)["fitness"]
+        return evaluate_detailed_solution(self.env, solution)["fitness"]
     
     def tournament_selection(self, k=3):
-        participants = random.sample(self.population, k)
+        # Select k random indices from the population without replacement
+        indices = self.rng.choice(len(self.population), size=k, replace=False)
+        participants = [self.population[i] for i in indices]
         return max(participants, key=self.fitness)
     
     def crossover(self, parent1, parent2):
-        point = np.random.randint(1, self.num_users)
+        # Choose a random crossover point using the seeded RNG
+        point = self.rng.randint(1, self.num_users)
         child1 = np.concatenate([parent1[:point], parent2[point:]])
         child2 = np.concatenate([parent2[:point], parent1[point:]])
         return child1, child2
     
     def mutate(self, solution):
         for i in range(self.num_users):
-            if np.random.rand() < self.mutation_rate:
-                solution[i] = np.random.randint(0, self.num_cells)
+            if self.rng.rand() < self.mutation_rate:
+                solution[i] = self.rng.randint(0, self.num_cells)
         return solution
     
     def optimize(self):

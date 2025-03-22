@@ -1,10 +1,8 @@
-# algorithms/fa.py
 import numpy as np
-import random
-from envs.custom_channel_env import evaluate_solution
+from envs.custom_channel_env import evaluate_detailed_solution
 
 class FireflyOptimization:
-    def __init__(self, num_users, num_cells, env, population_size=30, iterations=50, beta0=1, gamma=1):
+    def __init__(self, num_users, num_cells, env, population_size=30, iterations=50, beta0=1, gamma=1, seed=None):
         self.num_users = num_users
         self.num_cells = num_cells
         self.env = env
@@ -12,10 +10,13 @@ class FireflyOptimization:
         self.iterations = iterations
         self.beta0 = beta0
         self.gamma = gamma
-        self.population = [np.random.randint(0, num_cells, size=num_users) for _ in range(population_size)]
+        self.seed = seed
+        self.rng = np.random.RandomState(seed)
+        # Initialize population using the seeded RNG
+        self.population = [self.rng.randint(0, num_cells, size=num_users) for _ in range(population_size)]
     
     def fitness(self, solution):
-        return evaluate_solution(self.env, solution)["fitness"]
+        return evaluate_detailed_solution(self.env, solution)["fitness"]
     
     def distance(self, sol1, sol2):
         return np.sum(sol1 != sol2)  # Hamming distance
@@ -29,7 +30,8 @@ class FireflyOptimization:
                         beta = self.beta0 * np.exp(-self.gamma * r**2)
                         new_solution = self.population[i].copy()
                         for k in range(self.num_users):
-                            if np.random.rand() < beta:
+                            # Use the seeded RNG for generating random numbers
+                            if self.rng.rand() < beta:
                                 new_solution[k] = self.population[j][k]
                         if self.fitness(new_solution) > self.fitness(self.population[i]):
                             self.population[i] = new_solution

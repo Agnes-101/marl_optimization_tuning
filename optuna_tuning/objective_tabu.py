@@ -1,3 +1,11 @@
+import sys
+import os
+
+# Add project root to sys.path so that 'envs' can be found
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+
 import optuna
 from envs.custom_channel_env import PyMARLCustomEnv, evaluate_detailed_solution
 from algorithms.tabu import TabuSearchOptimization

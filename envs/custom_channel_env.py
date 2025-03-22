@@ -1,5 +1,3 @@
-# File: envs/custom_channel_env.py
-
 import numpy as np
 import gym
 from gym import spaces
@@ -11,19 +9,26 @@ class MobilityModel:
     """
     Modified Random Waypoint (MRWP) model to update user positions.
     """
-    def __init__(self, area_size=100, mu_V=1.0, sigma_V=0.5, V_min=0.1, V_max=3.0, pause_prob=0.1):
+    def __init__(self, area_size=100, mu_V=1.0, sigma_V=0.5, V_min=0.1, V_max=3.0, 
+                 pause_prob=0.1, rng=None):
         self.area_size = area_size
         self.mu_V = mu_V
         self.sigma_V = sigma_V
         self.V_min = V_min
         self.V_max = V_max
         self.pause_prob = pause_prob
+        self.rng = rng if rng is not None else np.random.RandomState()
+
+    def seed(self, seed=None):
+        self.rng.seed(seed)
+        return [seed]
 
     def update_positions(self, positions):
         num_users = positions.shape[0]
-        pause_mask = np.random.rand(num_users) >= self.pause_prob
-        V = np.clip(np.random.normal(self.mu_V, self.sigma_V, num_users), self.V_min, self.V_max)
-        theta = np.random.uniform(0, 2 * np.pi, num_users)
+        pause_mask = self.rng.rand(num_users) >= self.pause_prob
+        V = np.clip(self.rng.normal(self.mu_V, self.sigma_V, num_users), 
+                    self.V_min, self.V_max)
+        theta = self.rng.uniform(0, 2 * np.pi, num_users)
         dx = V * np.cos(theta)
         dy = V * np.sin(theta)
         new_positions = positions.copy()
@@ -41,7 +46,7 @@ class ChannelModel:
     """
     def __init__(self, PL0=0, sigma_shadow=2.0,
                  beam_gain_main=10, beam_gain_side=1, beamwidth=np.deg2rad(30),
-                 blockage_prob=0.3, NLOS_loss_dB=10, frequency=28e9):
+                 blockage_prob=0.3, NLOS_loss_dB=10, frequency=28e9, rng=None):
         self.PL0 = PL0
         self.sigma_shadow = sigma_shadow
         self.beam_gain_main = beam_gain_main
@@ -50,9 +55,15 @@ class ChannelModel:
         self.blockage_prob = blockage_prob
         self.NLOS_loss_linear = 10 ** (-NLOS_loss_dB / 10)
         self.frequency = frequency
+        self.bs_beam_directions = {}  # {bs_idx: current_beam_angle}
+        self.rng = rng if rng is not None else np.random.RandomState()
+
+    def seed(self, seed=None):
+        self.rng.seed(seed)
+        return [seed]
 
     def get_path_loss(self, d):
-        shadowing = np.random.normal(0, self.sigma_shadow)
+        shadowing = self.rng.normal(0, self.sigma_shadow)
         c = 3e8  # speed of light
         friis_loss = 20 * np.log10(4 * np.pi * d * self.frequency / c)
         PL_dB = self.PL0 + friis_loss + shadowing
@@ -62,13 +73,26 @@ class ChannelModel:
         return self.beam_gain_main if abs(theta_diff) <= self.beamwidth / 2 else self.beam_gain_side
 
     def get_blockage_factor(self):
-        return self.NLOS_loss_linear if np.random.rand() < self.blockage_prob else 1.0
-
-    def calculate_channel_gain(self, d, theta_diff=0):
+        return self.NLOS_loss_linear if self.rng.rand() < self.blockage_prob else 1.0
+    
+    def update_beam_directions(self, bs_positions, user_positions):
+        """Dynamic beam alignment based on user positions"""
+        for bs_idx, bs_pos in enumerate(bs_positions):
+            user_vectors = user_positions - bs_pos
+            if len(user_vectors) > 0:
+                avg_angle = np.arctan2(np.mean(user_vectors[:, 1]), np.mean(user_vectors[:, 0]))
+                self.bs_beam_directions[bs_idx] = avg_angle
+                
+    def calculate_channel_gain(self, d, bs_idx, user_pos, bs_pos, theta_diff=0):
+        # Calculate angle difference from BS perspective
+        user_angle = np.arctan2(user_pos[1] - bs_pos[1], user_pos[0] - bs_pos[0])
+        theta_diff = user_angle - self.bs_beam_directions.get(bs_idx, 0)
+        
         pl = self.get_path_loss(d)
         bf_gain = self.get_beamforming_gain(theta_diff)
         blockage = self.get_blockage_factor()
-        fading = max(0.5, np.random.rayleigh(scale=1.0))
+        # Use the seeded RNG for Rayleigh fading
+        fading = max(0.5, self.rng.rayleigh(scale=1.0))
         return pl * bf_gain * blockage * fading
 
 # ---------------------------------------------------
@@ -136,39 +160,45 @@ class HeterogeneousEnvironment:
     The underlying simulation environment for a multi-tier cellular network.
     It handles user positions, channel effects, and base station assignments.
     """
-    def __init__(self, macro_positions, small_positions, num_users, cell_capacity):
+    def __init__(self, macro_positions, small_positions, num_users, cell_capacity, seed=None):
+        self.rng = np.random.RandomState(seed)
         self.cells = [Cell('macro', pos) for pos in macro_positions] + \
                      [Cell('small', pos) for pos in small_positions]
         self.num_cells = len(self.cells)
         self.num_users = num_users
         self.cell_capacity = cell_capacity
-        x_positions = np.linspace(10, 90, num_users)
-        y_positions = np.random.rand(num_users) * 100
-        self.user_positions = np.column_stack((x_positions, y_positions))
+        self.user_positions = self.rng.uniform(0, 100, (num_users, 2))
         self.user_cell_assignment = np.full(num_users, -1)
-        self.noise_power = 1e-9
-        self.mobility_model = MobilityModel(area_size=100)
-        self.channel_model = ChannelModel()
+        self.bs_loads = np.zeros(len(self.cells), dtype=int)
+        bandwidth = 100e6
+        noise_power_dBm = -174 + 10 * np.log10(bandwidth) + 7
+        self.noise_power = 10 ** ((noise_power_dBm - 30) / 10)
+        self.mobility_model = MobilityModel(rng=self.rng)
+        self.channel_model = ChannelModel(rng=self.rng)
         self.current_step = 0
 
+    def seed(self, seed=None):
+        self.rng.seed(seed)
+        self.mobility_model.seed(seed)
+        self.channel_model.seed(seed)
+        return [seed]
+
     def reset(self):
-        x_positions = np.linspace(10, 90, self.num_users)
-        y_positions = np.random.rand(self.num_users) * 100
-        self.user_positions = np.column_stack((x_positions, y_positions))
+        self.user_positions = self.rng.uniform(0, 100, (self.num_users, 2))
         self.user_cell_assignment = np.full(self.num_users, -1)
         self.current_step = 0
-        state = {
+        return {
             "user_positions": self.user_positions,
             "cell_load": np.zeros(self.num_cells),
             "fairness": 1.0
         }
-        return state
 
     def update_user_positions(self):
         old_positions = self.user_positions.copy()
         new_positions = self.mobility_model.update_positions(old_positions)
         if np.allclose(new_positions, old_positions):
-            movement = np.random.uniform(-1, 1, old_positions.shape)
+            # Use the seeded RNG for fallback movement
+            movement = self.rng.uniform(-1, 1, old_positions.shape)
             new_positions = np.clip(old_positions + movement, 0, self.mobility_model.area_size)
         movement_magnitude = np.linalg.norm(new_positions - old_positions, axis=1)
         significant_movement = movement_magnitude > 3
@@ -176,39 +206,79 @@ class HeterogeneousEnvironment:
             if moved:
                 self.user_cell_assignment[i] = -1
         self.user_positions = new_positions
-
-    def fairness_index(self, bs_loads):
-        total = np.sum(bs_loads)
-        squared_sum = np.sum(bs_loads ** 2)
-        return (total ** 2) / (self.num_cells * squared_sum) if squared_sum > 0 else 1.0
+        
+    def fairness_index(self, throughputs):
+        """Standardized throughput fairness"""
+        return (np.sum(throughputs) ** 2) / (len(throughputs) * np.sum(np.square(throughputs)))
 
     def apply_actions(self, actions):
+        """Enforce cell capacity constraints"""
+        new_loads = np.bincount(actions, minlength=self.num_cells)
+        
         for user_idx, new_bs in enumerate(actions):
-            self.user_cell_assignment[user_idx] = new_bs
-
+            if new_loads[new_bs] <= self.cell_capacity:
+                self.user_cell_assignment[user_idx] = new_bs
+            else:
+                least_loaded = np.argmin(self.bs_loads)
+                self.user_cell_assignment[user_idx] = least_loaded
+                self.bs_loads[least_loaded] += 1
+        self.bs_loads = np.bincount(self.user_cell_assignment, minlength=self.num_cells)
+    
+    def _calculate_interference(self, user_idx, serving_cell_idx):
+        """Calculate interference from all non-serving base stations."""
+        user_pos = self.user_positions[user_idx]
+        inter_interference = 0.0
+        
+        for bs_idx, cell in enumerate(self.cells):
+            if bs_idx == serving_cell_idx:
+                continue
+            
+            d = np.linalg.norm(user_pos - cell.position)
+            beam_angle = self.channel_model.bs_beam_directions.get(bs_idx, 0)
+            user_angle = np.arctan2(user_pos[1] - cell.position[1], user_pos[0] - cell.position[0])
+            theta_diff = user_angle - beam_angle
+            channel_gain = self.channel_model.calculate_channel_gain(
+                d=d,
+                bs_idx=bs_idx,
+                user_pos=user_pos,
+                bs_pos=cell.position,
+                theta_diff=theta_diff
+            )
+            tx_power_watts = 10 ** ((cell.transmit_power_dbm - 30) / 10)
+            inter_interference += tx_power_watts * channel_gain
+            
+        return inter_interference 
+    
     def calculate_sinr(self, user_idx, cell_idx):
         cell = self.cells[cell_idx]
-        d = np.linalg.norm(self.user_positions[user_idx] - cell.position)
-        channel_gain = max(1e-6, self.channel_model.calculate_channel_gain(d, theta_diff=0))
-        G_tx = 10
-        G_rx = 10
-        SIR_target = 5
-        P_min = 0.01
-        P_tx = max(0.01, (P_min * (d ** cell.path_loss_exponent) * SIR_target) / (G_tx * G_rx * channel_gain))
-        P_tx = min(P_tx, 10)
-        signal_power = P_tx * channel_gain
-
-        bs_positions = np.array([bs.position for bs in self.cells])
-        distances = np.linalg.norm(self.user_positions[user_idx] - bs_positions, axis=1)
-        bs_power_factors = np.array([min(10 ** ((bs.transmit_power_dbm - 30) / 10), 1.0) for bs in self.cells])
-        gains = np.array([self.channel_model.calculate_channel_gain(dist, theta_diff=0) for dist in distances])
-        gains[cell_idx] = 0.0
-        inter_bs_interference = np.sum(bs_power_factors * gains)
-        num_users_in_bs = np.sum(self.user_cell_assignment == cell_idx)
-        intra_bs_interference = max(0.01, np.log1p(num_users_in_bs) * signal_power * 0.03)
-        return signal_power / (inter_bs_interference + intra_bs_interference + self.noise_power)
+        user_pos = self.user_positions[user_idx]
+        bs_pos = cell.position
+        d = np.linalg.norm(user_pos - bs_pos)
+        beam_angle = self.channel_model.bs_beam_directions.get(cell_idx, 0)
+        user_angle = np.arctan2(user_pos[1] - bs_pos[1], user_pos[0] - bs_pos[0])
+        theta_diff = user_angle - beam_angle
+        channel_gain = self.channel_model.calculate_channel_gain(
+            d=d,
+            bs_idx=cell_idx,
+            user_pos=user_pos,
+            bs_pos=bs_pos,
+            theta_diff=theta_diff
+        )
+        tx_power_watts = 10 ** ((cell.transmit_power_dbm - 30) / 10)
+        rx_power = tx_power_watts * channel_gain / (d ** cell.path_loss_exponent)
+        inter_interference = self._calculate_interference(user_idx, cell_idx)
+        intra_interference = rx_power / (self.bs_loads[cell_idx] + 1e-6)
+        total_interference = inter_interference + intra_interference + self.noise_power
+        return rx_power / total_interference
 
     def step(self, actions=None):
+        self.channel_model.update_beam_directions(
+            [bs.position for bs in self.cells],
+            self.user_positions
+        )
+        bs_idx = 0
+        beam_angle = self.channel_model.bs_beam_directions.get(bs_idx, 0)
+        print(f"Beam direction for BS {bs_idx}: {beam_angle:.2f} radians")
         self.update_user_positions()
         bs_loads = np.zeros(self.num_cells)
         if actions is None:
@@ -238,15 +308,14 @@ class HeterogeneousEnvironment:
 def evaluate_detailed_solution(env, solution, alpha=0.1, beta=0.1):
     """
     Evaluate a candidate solution by applying base station assignments
-    and computing multiple metrics:
-      - Fitness: Sum of per-user rewards, where each reward is:
-          log(1 + SINR) - alpha*(distance/d_max) - beta*(load imbalance penalty)
+    and computing multiple metrics.
     """
     env.apply_actions(solution)
     bs_loads = np.zeros(env.num_cells)
     for bs in solution:
         bs_loads[bs] += 1
-    d_max = np.linalg.norm([env.mobility_model.area_size, env.mobility_model.area_size])
+    
+    d_max = env.mobility_model.area_size * np.sqrt(2)
     
     rewards = []
     sinr_list = []
@@ -263,14 +332,14 @@ def evaluate_detailed_solution(env, solution, alpha=0.1, beta=0.1):
         distance = np.linalg.norm(user_position - bs_position)
         distances.append(distance)
         distance_penalty = distance / d_max
-        load_penalty = abs(bs_loads[solution[user_idx]] - np.mean(bs_loads)) / (np.mean(bs_loads) + 1e-6)
-        user_reward = np.log(1 + sinr) - alpha * distance_penalty - beta * load_penalty
+        load_imbalance = np.std(bs_loads) / (np.mean(bs_loads) + 1e-6)
+        user_reward = np.log(1 + sinr) - alpha * distance_penalty - beta * load_imbalance       
         rewards.append(user_reward)
     
     fitness_value = np.sum(rewards)
     average_sinr = np.mean(sinr_list)
     average_throughput = np.mean(throughput_list)
-    fairness = env.fairness_index(bs_loads)
+    fairness = (np.sum(throughput_list) ** 2) / (len(throughput_list) * np.sum(np.square(throughput_list)))
     load_variance = np.var(bs_loads)
     
     return {
@@ -279,55 +348,8 @@ def evaluate_detailed_solution(env, solution, alpha=0.1, beta=0.1):
         "average_throughput": average_throughput,
         "fairness": fairness,
         "load_variance": load_variance,
-        "rewards": rewards,
-        "sinr_list": sinr_list,
         "bs_loads": bs_loads
     }
-
-# def evaluate_detailed_solution(env, solution, alpha=0.1, beta=0.1):
-#     # Use env.env instead of env directly
-#     env.env.apply_actions(solution)
-#     bs_loads = np.zeros(env.env.num_cells)
-#     for bs in solution:
-#         bs_loads[bs] += 1
-#     d_max = np.linalg.norm([env.env.mobility_model.area_size, env.env.mobility_model.area_size])
-    
-#     rewards = []
-#     sinr_list = []
-#     throughput_list = []
-#     distances = []
-    
-#     for user_idx in range(env.env.num_users):
-#         sinr = env.env.calculate_sinr(user_idx, solution[user_idx])
-#         sinr_list.append(sinr)
-#         throughput = np.log2(1 + sinr)
-#         throughput_list.append(throughput)
-#         bs_position = env.env.cells[solution[user_idx]].position
-#         user_position = env.env.user_positions[user_idx]
-#         distance = np.linalg.norm(user_position - bs_position)
-#         distances.append(distance)
-#         distance_penalty = distance / d_max
-#         load_penalty = abs(bs_loads[solution[user_idx]] - np.mean(bs_loads)) / (np.mean(bs_loads) + 1e-6)
-#         user_reward = np.log(1 + sinr) - alpha * distance_penalty - beta * load_penalty
-#         rewards.append(user_reward)
-    
-#     fitness_value = np.sum(rewards)
-#     average_sinr = np.mean(sinr_list)
-#     average_throughput = np.mean(throughput_list)
-#     fairness = env.env.fairness_index(bs_loads)
-#     load_variance = np.var(bs_loads)
-    
-#     return {
-#         "fitness": fitness_value,
-#         "average_sinr": average_sinr,
-#         "average_throughput": average_throughput,
-#         "fairness": fairness,
-#         "load_variance": load_variance,
-#         "rewards": rewards,
-#         "sinr_list": sinr_list,
-#         "bs_loads": bs_loads
-#     }
-
 
 # ---------------------------------------------------
 # PyMARLCustomEnv (Gym-Compatible Wrapper)
@@ -336,6 +358,7 @@ class PyMARLCustomEnv(gym.Env):
     def __init__(self, env_args):
         super(PyMARLCustomEnv, self).__init__()
         self.num_users = env_args.get("num_users", 60)
+        self.rng = np.random.RandomState(env_args.get("seed"))
         self.macro_positions = env_args.get("macro_positions", [[50, 50]])
         self.small_positions = env_args.get("small_positions", [[20, 20], [20, 80], [80, 20], [80, 80]])
         self.cell_capacity = env_args.get("cell_capacity", 15)
@@ -344,26 +367,41 @@ class PyMARLCustomEnv(gym.Env):
             self.macro_positions,
             self.small_positions,
             self.num_users,
-            self.cell_capacity
+            self.cell_capacity,
+            seed=env_args.get("seed")
         )
         self.num_cells = self.env.num_cells
-        self.obs_dim = 2 + 1 + self.num_cells
+        self.obs_dim = 4  # [x_norm, y_norm, load_norm, sinr]
         self.observation_space = spaces.Box(low=0, high=100, shape=(self.obs_dim,), dtype=np.float32)
         self.action_space = spaces.Discrete(self.num_cells)
         self.current_step = 0
+
+    def seed(self, seed=None):
+        self.rng.seed(seed)
+        self.env.seed(seed)
+        return [seed]
         
     def __getattr__(self, attr):
         return getattr(self.env, attr)
+        
+    def _normalize_position(self, pos):
+        return pos / self.env.mobility_model.area_size
     
     def reset(self):
         state = self.env.reset()
         obs = []
         for i in range(self.num_users):
-            obs_i = np.concatenate([
-                state["user_positions"][i],
-                [state["fairness"]],
-                state["cell_load"]
-            ])
+            assigned_bs = self.user_cell_assignment[i]
+            load_value = 0
+            if assigned_bs != -1:
+                load_value = self.env.bs_loads[assigned_bs] / self.cell_capacity
+            # Use 0 as default BS index if unassigned
+            norm_sinr = self.env.calculate_sinr(i, assigned_bs if assigned_bs != -1 else 0) / 20
+            obs_i = [
+                *self._normalize_position(state["user_positions"][i]),
+                load_value,
+                norm_sinr
+            ]
             obs.append(obs_i)
         global_state = np.concatenate(obs)
         self.current_step = 0
@@ -385,5 +423,3 @@ class PyMARLCustomEnv(gym.Env):
         self.current_step += 1
         done = self.current_step >= self.episode_limit
         return {"obs": obs, "state": global_state, "reward": rewards, "done": done, "info": {}}
-
-    
