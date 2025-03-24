@@ -14,13 +14,13 @@ from algorithms.aco import ACOOptimization
 def train_aco(trial, fixed_env_args):
     # Hyperparameters to tune
     params = {
-        'iterations': trial.suggest_int('iterations', 50, 300),  # Match PFO range
-        'population_size': trial.suggest_int('population_size', 30, 100),
-        'aco_alpha': trial.suggest_float('aco_alpha', 0.5, 2.0),
-        'aco_beta': trial.suggest_float('aco_beta', 0.5, 2.0),
-        'evaporation_rate': trial.suggest_float('evaporation_rate', 0.05, 0.2),
-        'alpha': trial.suggest_float('alpha', 0.01, 0.1),  # Reward parameter
-        'beta': trial.suggest_float('beta', 0.01, 0.1),    # Reward parameter
+        'iterations': int(trial.suggest_int('iterations', 50, 300)),  # Match PFO range
+        'population_size': int(trial.suggest_int('population_size', 30, 100)),
+        'aco_alpha': float(trial.suggest_float('aco_alpha', 0.5, 2.0)),
+        'aco_beta': float(trial.suggest_float('aco_beta', 0.5, 2.0)),
+        'evaporation_rate': float(trial.suggest_float('evaporation_rate', 0.05, 0.2)),
+        'alpha': float(trial.suggest_float('alpha', 0.01, 0.1)),  # Reward parameter
+        'beta': float(trial.suggest_float('beta', 0.01, 0.1)),    # Reward parameter
     }
 
     # Environment setup with seeding
